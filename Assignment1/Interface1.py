@@ -33,40 +33,60 @@ def loadRatings(ratingstablename, ratingsfilepath, openconnection):
 
 
 def rangePartition(ratingstablename, numberofpartitions, openconnection):
-    pass # Remove this once you are done with implementation
-    MAX_RATING = 5
-    upper_range = numberofpartitions / MAX_RATING
+    delta = numberofpartitions / 5.0
     lower_range = 0
     partitionNumber = 0
     with openconnection.cursor() as cur:
-        while lower_range <= MAX_RATING:
+        while partitionNumber < numberofpartitions:
             if lower_range == 0:
                 cur.execute(f"""
-                    CREATE TABLE RangeRatingsPart{partitionNumber} AS
+                    CREATE TABLE range_ratings_part{partitionNumber} AS
                     SELECT * FROM {ratingstablename} 
-                    WHERE rating >= {lower_range} AND rating <= {lower_range+upper_range}
+                    WHERE rating >= {lower_range} AND rating <= {lower_range+delta}
                 """)
             else:
                 cur.execute(f"""
-                    CREATE TABLE RangeRatingsPart{partitionNumber} AS
+                    CREATE TABLE range_ratings_part{partitionNumber} AS
                     SELECT * FROM {ratingstablename} 
-                    WHERE rating > {lower_range} AND rating <= {lower_range+upper_range}
+                    WHERE rating > {lower_range} AND rating <= {lower_range+delta}
                 """) 
-            lower_range = lower_range + upper_range
+            lower_range = lower_range + delta
             partitionNumber += 1
-
+    openconnection.commit()
 
 def roundRobinPartition(ratingstablename, numberofpartitions, openconnection):
-    pass # Remove this once you are done with implementation
-
+    with openconnection.cursor() as cur:
+        for partition in range(numberofpartitions):
+            cur.execute(f"""
+                CREATE TABLE round_robin_ratings_part{partition} AS
+                SELECT userid, movieid, rating FROM
+                (
+                    SELECT userid, movieid, rating, ROW_NUMBER() OVER() as rowNumber
+                    FROM {ratingstablename}
+                ) AS TEMP
+                WHERE MOD(TEMP.rowNumber-1, 5) = {partition}
+            """)
+    openconnection.commit()
 
 def roundRobinInsert(ratingstablename, userid, itemid, rating, openconnection):
-    pass # Remove this once you are done with implementation
-
+    rowCount = insertAndCount(ratingstablename, userid, itemid, rating, openconnection)
+    partitionCount = getPartitionCount("round_robin_ratings_part", openconnection)
+    partition = (rowCount-1) % partitionCount
+    with openconnection.cursor() as cur:
+        cur.execute(f"""
+            INSERT INTO round_robin_ratings_part{partition}
+            VALUES ({userid}, {itemid}, {rating})
+        """)
+    openconnection.commit()
 
 def rangeInsert(ratingstablename, userid, itemid, rating, openconnection):
-    pass # Remove this once you are done with implementation
-
+    partitionCount = getPartitionCount("range_ratings_part", openconnection)
+    with openconnection.cursor() as cur:
+        cur.execute(f"""
+            INSERT INTO range_ratings_part{partition}
+            VALUES ({userid}, {itemid}, {rating})
+        """)
+    openconnection.commit()
 
 def rangeQuery(ratingMinValue, ratingMaxValue, openconnection, outputPath):
     pass #Remove this once you are done with implementation
@@ -75,6 +95,29 @@ def rangeQuery(ratingMinValue, ratingMaxValue, openconnection, outputPath):
 def pointQuery(ratingValue, openconnection, outputPath):
     pass # Remove this once you are done with implementation
 
+def insertAndCount(ratingstablename, userid, itemid, rating, openconnection):
+    with openconnection.cursor() as cur:
+        cur.execute(f"""
+            INSERT INTO {ratingstablename} 
+            VALUES ({userid}, {itemid}, {rating})
+        """)
+        cur.execute(f"""
+            SELECT COUNT(*)
+            FROM {ratingstablename}
+        """)
+        rowCount = int(cur.fetchone()[0])
+    return rowCount
+
+def getPartitionCount(tablePrefix, openconnection):
+    with openconnection.cursor() as cur:
+        cur.execute(f"""
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name LIKE '{tablePrefix}%'
+            AND table_schema = 'public'
+        """)
+        partitionCount = int(cur.fetchone()[0])
+    return partitionCount
 
 def createDB(dbname='dds_assignment1'):
     """
