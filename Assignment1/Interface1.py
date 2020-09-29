@@ -6,7 +6,6 @@ import sys
 def getOpenConnection(user='postgres', password='1234', dbname='postgres'):
     return psycopg2.connect("dbname='" + dbname + "' user='" + user + "' host='localhost' password='" + password + "'")
 
-
 def loadRatings(ratingstablename, ratingsfilepath, openconnection):
     with openconnection.cursor() as cur:
         cur.execute(f"""
@@ -30,7 +29,6 @@ def loadRatings(ratingstablename, ratingsfilepath, openconnection):
             DROP COLUMN temp4
         """)
     openconnection.commit()
-
 
 def rangePartition(ratingstablename, numberofpartitions, openconnection):
     delta = numberofpartitions / 5.0
@@ -80,33 +78,84 @@ def roundRobinInsert(ratingstablename, userid, itemid, rating, openconnection):
     openconnection.commit()
 
 def rangeInsert(ratingstablename, userid, itemid, rating, openconnection):
+    insertTuple(ratingstablename, userid, itemid, rating, openconnection)
     partitionCount = getPartitionCount("range_ratings_part", openconnection)
+    delta = partitionCount / 5.0
+    lowerRange = 0
     with openconnection.cursor() as cur:
-        cur.execute(f"""
-            INSERT INTO range_ratings_part{partition}
-            VALUES ({userid}, {itemid}, {rating})
-        """)
+        for partition in range(partitionCount):
+            if rating <= lowerRange+delta:
+                cur.execute(f"""
+                    INSERT INTO range_ratings_part{partition}
+                    VALUES ({userid}, {itemid}, {rating})
+                """)
+                break
+            lowerRange += delta
     openconnection.commit()
 
 def rangeQuery(ratingMinValue, ratingMaxValue, openconnection, outputPath):
-    pass #Remove this once you are done with implementation
+    robinPartitionCount = getPartitionCount("round_robin_ratings_part", openconnection)
+    rangePartitionCount = getPartitionCount("range_ratings_part", openconnection)
+    with openconnection.cursor() as cur, open(outputPath, 'w') as f:
+        for partition in range(robinPartitionCount):
+            cur.execute(f"""
+                SELECT *
+                FROM round_robin_ratings_part{partition}
+                WHERE rating >= {ratingMinValue}
+                AND rating <= {ratingMaxValue}
+            """)
+            for tup in cur.fetchall():
+                f.write(f"round_robin_ratings_part{partition},{','.join(map(str, tup))}\n")
 
+        for partition in range(rangePartitionCount):
+            cur.execute(f"""
+                SELECT *
+                FROM range_ratings_part{partition}
+                WHERE rating >= {ratingMinValue}
+                AND rating <= {ratingMaxValue}
+            """)
+            for tup in cur.fetchall():
+                f.write(f"range_ratings_part{partition},{','.join(map(str, tup))}\n")
 
 def pointQuery(ratingValue, openconnection, outputPath):
-    pass # Remove this once you are done with implementation
+    robinPartitionCount = getPartitionCount("round_robin_ratings_part", openconnection)
+    rangePartitionCount = getPartitionCount("range_ratings_part", openconnection)
+    with openconnection.cursor() as cur, open(outputPath, 'w') as f:
+        for partition in range(robinPartitionCount):
+            cur.execute(f"""
+                SELECT *
+                FROM round_robin_ratings_part{partition}
+                WHERE rating = {ratingValue}
+            """)
+            for tup in cur.fetchall():
+                f.write(f"round_robin_ratings_part{partition},{','.join(map(str, tup))}\n")
+
+        for partition in range(rangePartitionCount):
+            cur.execute(f"""
+                SELECT *
+                FROM range_ratings_part{partition}
+                WHERE rating = {ratingValue}
+            """)
+            for tup in cur.fetchall():
+                f.write(f"range_ratings_part{partition},{','.join(map(str, tup))}\n")
 
 def insertAndCount(ratingstablename, userid, itemid, rating, openconnection):
+    insertTuple(ratingstablename, userid, itemid, rating, openconnection)
     with openconnection.cursor() as cur:
-        cur.execute(f"""
-            INSERT INTO {ratingstablename} 
-            VALUES ({userid}, {itemid}, {rating})
-        """)
         cur.execute(f"""
             SELECT COUNT(*)
             FROM {ratingstablename}
         """)
         rowCount = int(cur.fetchone()[0])
     return rowCount
+
+def insertTuple(ratingstablename, userid, itemid, rating, openconnection):
+    with openconnection.cursor() as cur:
+        cur.execute(f"""
+            INSERT INTO {ratingstablename} 
+            VALUES ({userid}, {itemid}, {rating})
+        """)
+    openconnection.commit()
 
 def getPartitionCount(tablePrefix, openconnection):
     with openconnection.cursor() as cur:
